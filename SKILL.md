@@ -1,7 +1,7 @@
 ---
 name: microsoft-workspace
-description: Outlook Calendar, Email, Contacts, and OneDrive integration via Microsoft Graph API. Uses OAuth2 with automatic token refresh. Supports Hotmail/Outlook/Microsoft 365 accounts.
-version: 1.1.0
+description: Outlook Calendar, Email, Contacts, and To-Do integration via Microsoft Graph API. Uses OAuth2 with automatic token refresh. Supports Hotmail/Outlook/Microsoft 365 accounts.
+version: 1.2.0
 author: hermes-community
 license: MIT
 required_credential_files:
@@ -16,7 +16,7 @@ metadata:
 
 # Microsoft Workspace (Outlook/Hotmail)
 
-Outlook Calendar, Email, Contacts integration via Microsoft Graph API.
+Outlook Calendar, Email, Contacts, and To-Do integration via Microsoft Graph API.
 
 ## Quick Setup
 
@@ -46,7 +46,9 @@ See `README.md` for full Azure App Registration setup instructions.
 ```bash
 GAPI="python3 ~/.hermes/skills/productivity/microsoft-workspace/scripts/microsoft_api.py"
 
-# Calendar (defaults to upcoming events only)
+# --- CALENDAR ---
+
+# List upcoming events (default)
 $GAPI calendar list
 $GAPI calendar list --all
 $GAPI calendar list --start 2026-04-10T00:00:00 --end 2026-04-10T23:59:59
@@ -57,19 +59,61 @@ $GAPI calendar create --summary "Meeting" --start "2026-04-10T15:00:00-04:00" --
 # Create invite with video link (uses branded HTML template if configured)
 $GAPI calendar invite --summary "Project Sync" --start "2026-04-11T14:00:00-04:00" --end "2026-04-11T14:30:00-04:00" --description "Let's discuss" --attendees "john@example.com" --meet
 
+# Update an existing event (partial -- only update what you pass)
+$GAPI calendar update EVENT_ID --summary "New Title"
+$GAPI calendar update EVENT_ID --start "2026-04-11T16:00:00-04:00" --end "2026-04-11T16:30:00-04:00"
+
 # Delete event
 $GAPI calendar delete EVENT_ID
 
-# Email
+# Check free/busy status for people
+$GAPI calendar freebusy --emails "user@example.com,other@example.com" --start "2026-04-14T09:00:00-04:00" --end "2026-04-14T17:00:00-04:00" --interval 30
+
+# Find open slots where all attendees are free
+$GAPI calendar findopen --emails "user@example.com" --start "2026-04-14T09:00:00-04:00" --end "2026-04-14T17:00:00-04:00" --duration 30 --interval 15
+
+# --- EMAIL ---
+
+# List emails (add --unread for unread only, --important for high importance)
 $GAPI mail list --max 10
+$GAPI mail list --unread
+$GAPI mail list --important --folder archive
+
+# Search emails by keyword
+$GAPI mail search --query "invoice" --max 5
+$GAPI mail search --query "project report" --folder sent
+
+# Get full email content
 $GAPI mail get MESSAGE_ID
+
+# Send email
 $GAPI mail send --to user@example.com --subject "Hello" --body "Message text"
 
-# Email with attachment (max 3MB)
+# Send with attachment (max 3MB)
 $GAPI mail send --to user@example.com --subject "Here's the file" --body "See attached" --attachment /path/to/file.png
 
-# Contacts
+# Reply to an email
+$GAPI mail reply MESSAGE_ID --body "Thanks for the update!"
+
+# Reply-all to an email
+$GAPI mail replyall MESSAGE_ID --body "Sounds good, team."
+
+# Forward an email
+$GAPI mail forward MESSAGE_ID --to "forward@example.com" --body "FYI"
+
+# List all mail folders
+$GAPI mail folders
+
+# Move an email to a different folder (get folder ID from 'mail folders')
+$GAPI mail move MESSAGE_ID --folder FOLDER_ID
+
+# --- CONTACTS ---
+
 $GAPI contacts list --max 20
+
+# --- USER PROFILE ---
+
+$GAPI user profile
 ```
 
 ## Safe Email Sending
@@ -111,8 +155,13 @@ Set via: `./scripts/auth.sh --config --name "Your Name" --agent "AgentName"`
 All commands return JSON or structured text. Key fields:
 - **Calendar list**: `[{id, subject, start, end, notes, meet, link}]`
 - **Calendar create**: `{status, id, subject, start, end, link, meet, attendees}`
-- **Mail list**: `[{id, from, subject, receivedDateTime, bodyPreview}]`
+- **Calendar free/busy**: `[{email, status, availability}]`
+- **Calendar find open**: `[{start, end, duration}]`
+- **Mail list**: `[{id, from, subject, date, isRead, importance, preview}]`
+- **Mail search**: `[{id, from, subject, date, preview}]`
+- **Mail folders**: `[{id, name, total, unread}]`
 - **Contacts list**: `[{displayName, emailAddresses, phones}]`
+- **User profile**: `{displayName, email, jobTitle, office}`
 
 ## Sending Emails Safely (IMPORTANT)
 

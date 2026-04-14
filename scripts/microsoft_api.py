@@ -183,10 +183,133 @@ def calendar_create(summary: str, start: str, end: str, description: str = "",
     return output
 
 
+def calendar_update(event_id: str, summary: str = None, start: str = None,
+                    end: str = None, description: str = None, timezone: str = "America/Toronto"):
+    """Update an existing calendar event (partial update)."""
+    event = {}
+    if summary:
+        event["subject"] = summary
+    if description is not None:
+        event["body"] = {"contentType": "HTML", "content": description}
+    if start:
+        event["start"] = {"dateTime": start, "timeZone": timezone}
+    if end:
+        event["end"] = {"dateTime": end, "timeZone": timezone}
+
+    if not event:
+        print("ERROR: At least one field to update is required.")
+        sys.exit(1)
+
+    result = _api_call("PATCH", f"/me/events/{event_id}", data=event)
+    print(f"Updated: {result.get('subject', 'N/A')}")
+    print(f"  ID: {result['id']}")
+    if start:
+        print(f"  Start: {result['start']['dateTime']}")
+    if end:
+        print(f"  End: {result['end']['dateTime']}")
+    return {"status": "updated", "id": result["id"], "subject": result.get("subject", "")}
+
+
 def calendar_delete(event_id: str):
     """Delete a calendar event."""
     _api_call("DELETE", f"/me/events/{event_id}")
     print(f"Deleted event: {event_id}")
+
+
+def calendar_freebusy(emails: list, start: str, end: str, timezone: str = "America/Toronto",
+                      interval_minutes: int = 30):
+    """Check free/busy status for one or more people."""
+    data = {
+        "schedules": emails,
+        "startTime": {"dateTime": start, "timeZone": timezone},
+        "endTime": {"dateTime": end, "timeZone": timezone},
+        "availabilityViewInterval": interval_minutes,
+    }
+    result = _api_call("POST", "/me/calendar/getSchedule", data=data)
+    schedules = result.get("value", [])
+    if not schedules:
+        print("No schedule data returned.")
+        return []
+
+    output = []
+    for s in schedules:
+        email = s.get("scheduleId", "Unknown")
+        status_str = s.get("availabilityView", "")
+        free_blocks = []
+        for i, char in enumerate(status_str):
+            offset_min = i * interval_minutes
+            if char == "0":  # 0 = free
+                block_start = start  # approximate
+                free_blocks.append(f"  Slot {i}: free")
+
+        entry = {
+            "email": email,
+            "status": s.get("status", ""),
+            "availability": status_str,
+        }
+        output.append(entry)
+        print(f"  {email}")
+        print(f"    Status: {s.get('status', 'N/A')}")
+        # Decode availability: 0=free, 1=tentative, 2=busy, 3=OOF
+        labels = {"0": "Free", "1": "Tentative", "2": "Busy", "3": "OOF"}
+        if status_str:
+            print(f"    Schedule ({interval_minutes}min blocks):")
+            for i, char in enumerate(status_str):
+                label = labels.get(char, char)
+                print(f"      Block {i}: {label}")
+        print()
+    return output
+
+
+def calendar_find_open(emails: list, start: str, end: str, duration_minutes: int = 30,
+                       timezone: str = "America/Toronto", interval_minutes: int = 15):
+    """Find available time slots where all attendees are free."""
+    data = {
+        "schedules": emails,
+        "startTime": {"dateTime": start, "timeZone": timezone},
+        "endTime": {"dateTime": end, "timeZone": timezone},
+        "availabilityViewInterval": interval_minutes,
+    }
+    result = _api_call("POST", "/me/calendar/getSchedule", data=data)
+    schedules = result.get("value", [])
+
+    if not schedules:
+        print("No schedule data returned.")
+        return []
+
+    # Find slots where ALL are free
+    all_views = [s.get("availabilityView", "") for s in schedules if s.get("availabilityView")]
+    if not all_views:
+        print("No availability data.")
+        return []
+
+    min_len = min(len(v) for v in all_views)
+    blocks_needed = duration_minutes // interval_minutes
+    if duration_minutes % interval_minutes:
+        blocks_needed += 1
+
+    open_slots = []
+    from datetime import datetime, timedelta
+    try:
+        dt_start = datetime.fromisoformat(start)
+    except Exception:
+        dt_start = datetime.utcnow()
+
+    for i in range(min_len - blocks_needed + 1):
+        if all(v[i + j] == "0" for v in all_views for j in range(blocks_needed)):
+            slot_start = dt_start + timedelta(minutes=i * interval_minutes)
+            slot_end = slot_start + timedelta(minutes=duration_minutes)
+            slot = {
+                "start": slot_start.strftime("%Y-%m-%dT%H:%M:%S"),
+                "end": slot_end.strftime("%Y-%m-%dT%H:%M:%S"),
+                "duration": duration_minutes,
+            }
+            open_slots.append(slot)
+            print(f"  Open: {slot['start']} - {slot['end']} ({duration_minutes} min)")
+
+    if not open_slots:
+        print("No open slots found in this time range.")
+    return open_slots
 
 
 def calendar_invite(summary: str, start: str, end: str, description: str = "",
@@ -310,26 +433,82 @@ def calendar_invite(summary: str, start: str, end: str, description: str = "",
 
 # === MAIL ===
 
-def mail_list(max_results: int = 10, folder: str = "inbox"):
-    """List emails."""
+def mail_list(max_results: int = 10, folder: str = "inbox",
+              unread: bool = False, important: bool = False):
+    """List emails with optional filters."""
     params = {
         "$top": max_results,
         "$orderby": "receivedDateTime desc",
-        "$select": "id,from,subject,receivedDateTime,bodyPreview,isRead",
+        "$select": "id,from,subject,receivedDateTime,bodyPreview,isRead,importance",
     }
+    filters = []
+    if unread:
+        filters.append("isRead eq false")
+    if important:
+        filters.append("importance eq 'high'")
+    if filters:
+        params["$filter"] = " and ".join(filters)
+
     result = _api_call("GET", f"/me/mailFolders/{folder}/messages", params=params)
     messages = result.get("value", [])
     if not messages:
         print("No messages found.")
-        return
+        return []
+    output = []
     for m in messages:
         sender = m.get("from", {}).get("emailAddress", {}).get("address", "Unknown")
         read = " " if m.get("isRead") else ">"
-        print(f"  {read} {m['subject']}")
+        imp = "!" if m.get("importance") == "high" else " "
+        entry = {
+            "id": m["id"],
+            "from": sender,
+            "subject": m["subject"],
+            "date": m["receivedDateTime"],
+            "isRead": m.get("isRead", False),
+            "importance": m.get("importance", "normal"),
+            "preview": m.get("bodyPreview", "")[:80],
+        }
+        output.append(entry)
+        print(f"  {read}{imp} {m['subject']}")
         print(f"    From: {sender}")
         print(f"    Date: {m['receivedDateTime']}")
         print(f"    ID: {m['id']}")
         print()
+    return output
+
+
+def mail_search(query: str, max_results: int = 10, folder: str = "inbox"):
+    """Search emails by keyword."""
+    params = {
+        "$search": f'"{query}"',
+        "$top": max_results,
+        "$select": "id,from,subject,receivedDateTime,bodyPreview,isRead",
+    }
+    # $search goes on the endpoint path, not as a query param for mail
+    endpoint = f"/me/mailFolders/{folder}/messages"
+    url_full = f"{GRAPH_BASE}{endpoint}?{urlencode(params)}"
+    result = _api_call("GET", f"{endpoint}", params=params)
+    messages = result.get("value", [])
+    if not messages:
+        print(f"No results for '{query}'.")
+        return []
+    output = []
+    for m in messages:
+        sender = m.get("from", {}).get("emailAddress", {}).get("address", "Unknown")
+        entry = {
+            "id": m["id"],
+            "from": sender,
+            "subject": m["subject"],
+            "date": m["receivedDateTime"],
+            "preview": m.get("bodyPreview", "")[:80],
+        }
+        output.append(entry)
+        print(f"  {m['subject']}")
+        print(f"    From: {sender}")
+        print(f"    Date: {m['receivedDateTime']}")
+        print(f"    ID: {m['id']}")
+        print()
+    return output
 
 
 def mail_get(message_id: str):
@@ -339,6 +518,69 @@ def mail_get(message_id: str):
     print(f"From: {result.get('from', {}).get('emailAddress', {}).get('address', 'N/A')}")
     print(f"Date: {result['receivedDateTime']}")
     print(f"Body:\n{result.get('body', {}).get('content', 'N/A')}")
+
+
+def mail_reply(message_id: str, body: str, html: bool = False):
+    """Reply to an email."""
+    content_type = "HTML" if html else "Text"
+    data = {"comment": body}
+    result = _api_call("POST", f"/me/messages/{message_id}/reply", data=data)
+    print(f"Replied to message: {message_id}")
+    return {"status": "replied", "id": message_id}
+
+
+def mail_reply_all(message_id: str, body: str, html: bool = False):
+    """Reply-all to an email."""
+    data = {"comment": body}
+    result = _api_call("POST", f"/me/messages/{message_id}/replyAll", data=data)
+    print(f"Replied-all to message: {message_id}")
+    return {"status": "replied-all", "id": message_id}
+
+
+def mail_forward(message_id: str, to: str, body: str = "", html: bool = False):
+    """Forward an email."""
+    data = {
+        "comment": body,
+        "toRecipients": [{"emailAddress": {"address": to}}],
+    }
+    result = _api_call("POST", f"/me/messages/{message_id}/forward", data=data)
+    print(f"Forwarded message {message_id} to {to}")
+    return {"status": "forwarded", "id": message_id, "to": to}
+
+
+def mail_folders():
+    """List all mail folders."""
+    params = {
+        "$select": "id,displayName,totalItemCount,unreadItemCount",
+        "$orderby": "displayName",
+    }
+    result = _api_call("GET", "/me/mailFolders", params=params)
+    folders = result.get("value", [])
+    if not folders:
+        print("No folders found.")
+        return []
+    output = []
+    for f in folders:
+        entry = {
+            "id": f["id"],
+            "name": f["displayName"],
+            "total": f.get("totalItemCount", 0),
+            "unread": f.get("unreadItemCount", 0),
+        }
+        output.append(entry)
+        unread_str = f" ({f.get('unreadItemCount', 0)} unread)" if f.get("unreadItemCount", 0) else ""
+        print(f"  {f['displayName']}{unread_str}")
+        print(f"    ID: {f['id']}")
+        print()
+    return output
+
+
+def mail_move(message_id: str, folder_id: str):
+    """Move an email to a different folder."""
+    data = {"destinationId": folder_id}
+    result = _api_call("POST", f"/me/messages/{message_id}/move", data=data)
+    print(f"Moved message to: {result.get('parentFolderId', folder_id)}")
+    return {"status": "moved", "id": message_id, "destination": folder_id}
 
 
 def mail_send(to: str, subject: str, body: str, html: bool = False, attachment: str = None):
@@ -416,21 +658,52 @@ def contacts_list(max_results: int = 20):
         print()
 
 
+# === USER PROFILE ===
+
+def user_profile():
+    """Get current user's profile info."""
+    params = {"$select": "displayName,mail,userPrincipalName,jobTitle,officeLocation"}
+    result = _api_call("GET", "/me", params=params)
+    profile = {
+        "displayName": result.get("displayName", ""),
+        "email": result.get("mail") or result.get("userPrincipalName", ""),
+        "jobTitle": result.get("jobTitle", ""),
+        "office": result.get("officeLocation", ""),
+    }
+    print(f"  Name: {profile['displayName']}")
+    print(f"  Email: {profile['email']}")
+    if profile["jobTitle"]:
+        print(f"  Title: {profile['jobTitle']}")
+    if profile["office"]:
+        print(f"  Office: {profile['office']}")
+    return profile
+
+
 # === CLI ===
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: microsoft_api.py <resource> <action> [args]")
-        print("Resources: calendar, mail, contacts")
+        print("Resources: calendar, mail, contacts, user")
         print("Actions:")
         print("  calendar list [--start DATETIME] [--end DATETIME] [--max N] [--all]")
         print("  calendar create --summary TITLE --start DATETIME --end DATETIME [--description TEXT] [--attendees EMAIL1,EMAIL2]")
         print("  calendar invite --summary TITLE --start DATETIME --end DATETIME [--description TEXT] [--attendees EMAIL1,EMAIL2] [--meet]")
+        print("  calendar update EVENT_ID [--summary TITLE] [--start DATETIME] [--end DATETIME] [--description TEXT]")
         print("  calendar delete EVENT_ID")
-        print("  mail list [--max N]")
+        print("  calendar freebusy --emails EMAIL1,EMAIL2 --start DATETIME --end DATETIME [--interval 30]")
+        print("  calendar findopen --emails EMAIL1,EMAIL2 --start DATETIME --end DATETIME [--duration 30] [--interval 15]")
+        print("  mail list [--max N] [--folder NAME] [--unread] [--important]")
+        print("  mail search --query KEYWORD [--max N] [--folder NAME]")
         print("  mail get MESSAGE_ID")
         print("  mail send --to EMAIL --subject TEXT --body TEXT [--html] [--attachment FILEPATH]")
+        print("  mail reply MESSAGE_ID --body TEXT")
+        print("  mail replyall MESSAGE_ID --body TEXT")
+        print("  mail forward MESSAGE_ID --to EMAIL [--body TEXT]")
+        print("  mail folders")
+        print("  mail move MESSAGE_ID --folder FOLDER_ID")
         print("  contacts list [--max N]")
+        print("  user profile")
         sys.exit(1)
 
     resource = sys.argv[1]
@@ -479,6 +752,28 @@ if __name__ == "__main__":
                 sys.exit(1)
             calendar_create(summary, start, end, desc, attendees, tz)
 
+        elif action == "update":
+            if len(sys.argv) < 4:
+                print("Usage: calendar update EVENT_ID [--summary TITLE] [--start DATETIME] [--end DATETIME] [--description TEXT]")
+                sys.exit(1)
+            event_id = sys.argv[3]
+            summary = start = end = None
+            desc = None
+            tz = "America/Toronto"
+            i = 4
+            while i < len(sys.argv):
+                if sys.argv[i] == "--summary" and i + 1 < len(sys.argv):
+                    summary = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--description" and i + 1 < len(sys.argv):
+                    desc = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--start" and i + 1 < len(sys.argv):
+                    start = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--end" and i + 1 < len(sys.argv):
+                    end = sys.argv[i + 1]; i += 2
+                else:
+                    i += 1
+            calendar_update(event_id, summary, start, end, desc, tz)
+
         elif action == "delete":
             if len(sys.argv) < 4:
                 print("Usage: calendar delete EVENT_ID")
@@ -511,21 +806,96 @@ if __name__ == "__main__":
                 sys.exit(1)
             calendar_invite(summary, start, end, desc, attendees, tz, use_meet)
 
+        elif action == "freebusy":
+            emails = start = end = None
+            tz = "America/Toronto"
+            interval = 30
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--emails" and i + 1 < len(sys.argv):
+                    emails = sys.argv[i + 1].split(","); i += 2
+                elif sys.argv[i] == "--start" and i + 1 < len(sys.argv):
+                    start = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--end" and i + 1 < len(sys.argv):
+                    end = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--interval" and i + 1 < len(sys.argv):
+                    interval = int(sys.argv[i + 1]); i += 2
+                else:
+                    i += 1
+            if not all([emails, start, end]):
+                print("ERROR: --emails, --start, and --end are required")
+                sys.exit(1)
+            calendar_freebusy(emails, start, end, tz, interval)
+
+        elif action == "findopen":
+            emails = start = end = None
+            tz = "America/Toronto"
+            duration = 30
+            interval = 15
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--emails" and i + 1 < len(sys.argv):
+                    emails = sys.argv[i + 1].split(","); i += 2
+                elif sys.argv[i] == "--start" and i + 1 < len(sys.argv):
+                    start = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--end" and i + 1 < len(sys.argv):
+                    end = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--duration" and i + 1 < len(sys.argv):
+                    duration = int(sys.argv[i + 1]); i += 2
+                elif sys.argv[i] == "--interval" and i + 1 < len(sys.argv):
+                    interval = int(sys.argv[i + 1]); i += 2
+                else:
+                    i += 1
+            if not all([emails, start, end]):
+                print("ERROR: --emails, --start, and --end are required")
+                sys.exit(1)
+            calendar_find_open(emails, start, end, duration, tz, interval)
+
     elif resource == "mail":
         if action == "list":
             max_r = 10
+            folder = "inbox"
+            unread = False
+            important = False
             i = 3
             while i < len(sys.argv):
                 if sys.argv[i] == "--max" and i + 1 < len(sys.argv):
                     max_r = int(sys.argv[i + 1]); i += 2
+                elif sys.argv[i] == "--folder" and i + 1 < len(sys.argv):
+                    folder = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--unread":
+                    unread = True; i += 1
+                elif sys.argv[i] == "--important":
+                    important = True; i += 1
                 else:
                     i += 1
-            mail_list(max_r)
+            mail_list(max_r, folder, unread, important)
+
+        elif action == "search":
+            query = None
+            max_r = 10
+            folder = "inbox"
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--query" and i + 1 < len(sys.argv):
+                    query = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--max" and i + 1 < len(sys.argv):
+                    max_r = int(sys.argv[i + 1]); i += 2
+                elif sys.argv[i] == "--folder" and i + 1 < len(sys.argv):
+                    folder = sys.argv[i + 1]; i += 2
+                else:
+                    i += 1
+            if not query:
+                print("ERROR: --query is required")
+                sys.exit(1)
+            mail_search(query, max_r, folder)
+
         elif action == "get":
             if len(sys.argv) < 4:
                 print("Usage: mail get MESSAGE_ID")
                 sys.exit(1)
             mail_get(sys.argv[3])
+
         elif action == "send":
             to = subject = body = ""
             html = False
@@ -549,6 +919,79 @@ if __name__ == "__main__":
                 sys.exit(1)
             mail_send(to, subject, body, html, attachment)
 
+        elif action == "reply":
+            if len(sys.argv) < 5:
+                print("Usage: mail reply MESSAGE_ID --body TEXT")
+                sys.exit(1)
+            msg_id = sys.argv[3]
+            body = ""
+            i = 4
+            while i < len(sys.argv):
+                if sys.argv[i] == "--body" and i + 1 < len(sys.argv):
+                    body = sys.argv[i + 1]; i += 2
+                else:
+                    i += 1
+            if not body:
+                print("ERROR: --body is required")
+                sys.exit(1)
+            mail_reply(msg_id, body)
+
+        elif action == "replyall":
+            if len(sys.argv) < 5:
+                print("Usage: mail replyall MESSAGE_ID --body TEXT")
+                sys.exit(1)
+            msg_id = sys.argv[3]
+            body = ""
+            i = 4
+            while i < len(sys.argv):
+                if sys.argv[i] == "--body" and i + 1 < len(sys.argv):
+                    body = sys.argv[i + 1]; i += 2
+                else:
+                    i += 1
+            if not body:
+                print("ERROR: --body is required")
+                sys.exit(1)
+            mail_reply_all(msg_id, body)
+
+        elif action == "forward":
+            if len(sys.argv) < 5:
+                print("Usage: mail forward MESSAGE_ID --to EMAIL [--body TEXT]")
+                sys.exit(1)
+            msg_id = sys.argv[3]
+            to = body = ""
+            i = 4
+            while i < len(sys.argv):
+                if sys.argv[i] == "--to" and i + 1 < len(sys.argv):
+                    to = sys.argv[i + 1]; i += 2
+                elif sys.argv[i] == "--body" and i + 1 < len(sys.argv):
+                    body = sys.argv[i + 1]; i += 2
+                else:
+                    i += 1
+            if not to:
+                print("ERROR: --to is required")
+                sys.exit(1)
+            mail_forward(msg_id, to, body)
+
+        elif action == "folders":
+            mail_folders()
+
+        elif action == "move":
+            if len(sys.argv) < 5:
+                print("Usage: mail move MESSAGE_ID --folder FOLDER_ID")
+                sys.exit(1)
+            msg_id = sys.argv[3]
+            folder_id = None
+            i = 4
+            while i < len(sys.argv):
+                if sys.argv[i] == "--folder" and i + 1 < len(sys.argv):
+                    folder_id = sys.argv[i + 1]; i += 2
+                else:
+                    i += 1
+            if not folder_id:
+                print("ERROR: --folder is required")
+                sys.exit(1)
+            mail_move(msg_id, folder_id)
+
     elif resource == "contacts":
         max_r = 20
         i = 3
@@ -558,6 +1001,9 @@ if __name__ == "__main__":
             else:
                 i += 1
         contacts_list(max_r)
+
+    elif resource == "user":
+        user_profile()
 
     else:
         print(f"Unknown resource: {resource}")

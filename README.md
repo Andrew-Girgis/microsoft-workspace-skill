@@ -1,15 +1,29 @@
 # Microsoft Workspace Skill for Hermes Agent
 
-Outlook Calendar, Email, and Contacts integration via Microsoft Graph API. Works with Hotmail, Outlook.com, and Microsoft 365 accounts.
+Outlook Calendar, Email, Contacts, and To-Do integration via Microsoft Graph API. Works with Hotmail, Outlook.com, and Microsoft 365 accounts.
 
 ## Features
 
-- List, create, delete calendar events
-- Send calendar invites with branded HTML templates
+### Email (primary focus)
+- List emails with filters (unread, important, by folder)
+- Search emails by keyword
+- Read full email content
 - Send emails with file attachments (up to 3MB)
-- List and read emails
-- List contacts
+- Reply and reply-all to emails
+- Forward emails
+- List and navigate mail folders
+- Move emails between folders
 - Safe email sender with preview mode (prevents shell variable issues)
+
+### Calendar
+- List, create, update, delete calendar events
+- Send calendar invites with branded HTML templates and Teams video links
+- Check free/busy status for one or more people
+- Find open time slots where all attendees are free
+
+### Contacts & Profile
+- List contacts
+- Get user profile info
 
 ## Prerequisites
 
@@ -99,6 +113,19 @@ API="python3 scripts/microsoft_api.py"
 # List recent emails
 $API mail list --max 10
 
+# List unread emails only
+$API mail list --unread
+
+# List high-importance emails
+$API mail list --important
+
+# List emails from a specific folder
+$API mail list --folder archive --max 5
+
+# Search emails by keyword
+$API mail search --query "invoice" --max 5
+$API mail search --query "project report" --folder sent
+
 # Read an email
 $API mail get MESSAGE_ID
 
@@ -107,6 +134,21 @@ $API mail send --to "user@example.com" --subject "Hello" --body "How are you?"
 
 # Send with attachment (max 3MB)
 $API mail send --to "user@example.com" --subject "See attached" --body "Here's the file" --attachment /path/to/file.png
+
+# Reply to an email
+$API mail reply MESSAGE_ID --body "Thanks for the update!"
+
+# Reply-all to an email
+$API mail replyall MESSAGE_ID --body "Sounds good, team."
+
+# Forward an email
+$API mail forward MESSAGE_ID --to "forward@example.com" --body "FYI"
+
+# List all mail folders
+$API mail folders
+
+# Move an email to a different folder
+$API mail move MESSAGE_ID --folder FOLDER_ID
 ```
 
 ### Safe Email Sending (recommended)
@@ -144,15 +186,28 @@ $API calendar create --summary "Meeting" --start "2026-04-10T15:00:00-04:00" --e
 # Create an invite with attendees
 $API calendar invite --summary "Project Sync" --start "2026-04-11T14:00:00-04:00" --end "2026-04-11T14:30:00-04:00" --description "Let's discuss" --attendees "john@example.com,jane@example.com" --meet
 
+# Update an event (partial -- only update what you pass)
+$API calendar update EVENT_ID --summary "New Title"
+$API calendar update EVENT_ID --start "2026-04-11T16:00:00-04:00" --end "2026-04-11T16:30:00-04:00"
+
 # Delete an event
 $API calendar delete EVENT_ID
+
+# Check free/busy for people (30-min blocks)
+$API calendar freebusy --emails "user@example.com,other@example.com" --start "2026-04-14T09:00:00-04:00" --end "2026-04-14T17:00:00-04:00" --interval 30
+
+# Find open 30-min slots where all attendees are free (15-min blocks)
+$API calendar findopen --emails "user@example.com" --start "2026-04-14T09:00:00-04:00" --end "2026-04-14T17:00:00-04:00" --duration 30 --interval 15
 ```
 
-### Contacts
+### Contacts & Profile
 
 ```bash
 # List contacts
 $API contacts list --max 20
+
+# Get your profile info
+$API user profile
 ```
 
 ## File Locations
