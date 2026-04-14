@@ -1,5 +1,27 @@
 # Microsoft Workspace Skill for Hermes Agent
 
+```
+                    *                  *                       *
+             *           _____________           * .'
+                        |\           /|
+                        | \    @    / |
+                        |  \  ___  /  |
+                        |   \/   \/   |
+                        |    \___/    |
+                        |     | |     |
+                        |_____| |_____|
+
+                 __  ____________  __  ______________
+                / / / / ____/ __ \/  |/  / ____/ ___/
+               / /_/ / __/ / /_/ / /|_/ / __/  \__ \
+              / __  / /___/ _, _/ /  / / /___ ___/ /
+             /_/ /_/_____/_/ |_/_/  /_/_____//____/
+
+            ┌─────────────────────────────────────┐
+            │  Outlook · Calendar · Email · Tasks │
+            └─────────────────────────────────────┘
+```
+
 Outlook Calendar, Email, Contacts, and To-Do integration via Microsoft Graph API. Works with Hotmail, Outlook.com, and Microsoft 365 accounts.
 
 ## Features
